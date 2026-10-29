@@ -1,0 +1,11 @@
+﻿.venv/
+venv/
+__pycache__/
+*.pyc
+.idea/
+*.sqlite3
+.env
+
+# DNS-cache runtime
+dns_cache.json
+dns_cache.json.tmp

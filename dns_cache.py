@@ -1,22 +1,3 @@
-#!/usr/bin/env python3
-"""
-DNS-cache: итеративный DNS-сервер с ручной (де)сериализацией протокола DNS.
-
-Что умеет
-  * опрашивает серверы итеративно, начиная с корневых (referral -> NS -> ... -> ответ);
-  * одновременно обслуживает много клиентов (поток на запрос);
-  * кеширует ответы с учётом TTL (в т.ч. отрицательные: NXDOMAIN / NODATA по SOA),
-    а также делегирования зон, чтобы не ходить каждый раз в корень;
-  * кеш сохраняется в JSON-файл и подхватывается при перезапуске;
-  * работает и по UDP, и по TCP (и для клиентов, и для запросов "наверх";
-    при TC-флаге в ответе вышестоящего сервера повторяет запрос по TCP);
-  * поддерживает любые типы записей (A, AAAA, NS, MX, TXT, CNAME, SOA, PTR, SRV, ...);
-  * ".multiply.": 2.22.multiply.test.com -> 127.0.0.44 (никого не спрашиваем).
-
-Запуск
-    sudo python3 dns_cache.py                  # 127.0.0.1:53
-    python3 dns_cache.py --port 5353           # без root, тогда: dig -p 5353 example.com @127.0.0.1
-"""
 import argparse
 import json
 import logging
@@ -34,9 +15,7 @@ from dataclasses import dataclass, field, replace
 
 log = logging.getLogger("dns-cache")
 
-# --------------------------------------------------------------------------- #
 #  Константы
-# --------------------------------------------------------------------------- #
 T_A, T_NS, T_CNAME, T_SOA, T_PTR, T_MX, T_TXT, T_AAAA, T_OPT = 1, 2, 5, 6, 12, 15, 16, 28, 41
 T_IXFR, T_AXFR, T_ANY = 251, 252, 255
 C_IN = 1
@@ -80,9 +59,7 @@ TCP_IDLE_TIMEOUT = 10.0
 SINGLE_NAME_TYPES = {2, 3, 4, 5, 7, 8, 9, 12}   # NS, MD, MF, CNAME, MB, MG, MR, PTR
 
 
-# --------------------------------------------------------------------------- #
 #  Имена: кортеж меток (bytes). Регистр сохраняем, сравниваем через lower().
-# --------------------------------------------------------------------------- #
 def lower(name):
     return tuple(l.lower() for l in name)
 
@@ -101,9 +78,7 @@ def is_under(name, zone):
     return len(name) >= len(zone) and name[len(name) - len(zone):] == zone
 
 
-# --------------------------------------------------------------------------- #
 #  Разбор сообщений
-# --------------------------------------------------------------------------- #
 class ParseError(Exception):
     pass
 
@@ -241,9 +216,7 @@ def parse_message(data):
     return msg
 
 
-# --------------------------------------------------------------------------- #
 #  Формирование сообщений
-# --------------------------------------------------------------------------- #
 class Writer:
     """Буфер с поддержкой сжатия имён (указатели на ранее записанные суффиксы)."""
 
@@ -338,9 +311,7 @@ def rdata_name(rr):
     return lower(read_name(rr.rdata, 0)[0])
 
 
-# --------------------------------------------------------------------------- #
 #  Сетевой обмен с вышестоящими серверами
-# --------------------------------------------------------------------------- #
 def recv_exact(sock, n):
     chunks = []
     while n:
@@ -397,7 +368,7 @@ def tcp_exchange(ip, port, wire, qid, qkey, timeout):
 
 
 class Budget:
-    """Ограничение времени и числа запросов на один клиентский запрос."""
+    """Ограничение времени и числа запросов на один запрос."""
 
     def __init__(self):
         self.deadline = time.monotonic() + RESOLVE_DEADLINE
@@ -413,9 +384,7 @@ class Budget:
         return True
 
 
-# --------------------------------------------------------------------------- #
 #  Кеш (ответы + делегирования) с сохранением на диск
-# --------------------------------------------------------------------------- #
 @dataclass
 class Entry:
     rcode: int
@@ -449,7 +418,7 @@ class Cache:
         self.delegations = {}    # zone -> (expire, [ip, ...])
         self.dirty = False
 
-    # ---- ответы ----
+    # ответы
     def get(self, name, qtype):
         now = time.time()
         with self.lock:
@@ -485,7 +454,7 @@ class Cache:
             for k in oldest[:MAX_CACHE_ENTRIES // 10]:
                 del self.entries[k]
 
-    # ---- делегирования (кто отвечает за зону) ----
+    # делегирования (кто отвечает за зону)
     def get_delegation(self, name):
         now = time.time()
         with self.lock:
@@ -506,7 +475,7 @@ class Cache:
             self.delegations[zone] = (time.time() + ttl, list(ips))
             self.dirty = True
 
-    # ---- сохранение / загрузка ----
+    # сохранение
     def save(self):
         if not self.path:
             return
@@ -563,9 +532,7 @@ class Cache:
             self.delegations.clear()
 
 
-# --------------------------------------------------------------------------- #
 #  Итеративный резолвер
-# --------------------------------------------------------------------------- #
 FINAL, REFERRAL, BAD = "final", "referral", "bad"
 
 
@@ -590,8 +557,7 @@ def classify(msg, name, zone):
         return FINAL
     has_soa = any(r.type == T_SOA for r in msg.authority)
     if msg.rcode == NXDOMAIN:
-        # Настоящий авторитативный NXDOMAIN всегда с AA (и обычно с SOA). Голый NXDOMAIN
-        # без AA - типичная подделка перехватчиков DNS (captive portal, фильтр провайдера).
+        # без AA - типичная подделка перехватчиков DNS
         return FINAL if (msg.aa or has_soa) else BAD
     if has_soa:
         return FINAL                                   # NODATA
@@ -611,7 +577,7 @@ class Resolver:
         self.roots = list(roots or ROOT_SERVERS)
         self.port = upstream_port
 
-    # ---------- публичный вход ----------
+    # публичный вход
     def resolve(self, name, qtype, budget, depth=0):
         cached = self.cache.get(name, qtype)
         if cached is not None:
@@ -628,7 +594,7 @@ class Resolver:
         elif msg.rcode == NXDOMAIN:
             res = Result(NXDOMAIN, chain, soa_authority(msg))
         elif chain:
-            # цепочка CNAME уходит за пределы этого ответа - дорезолвливаем цель
+            # цепочка CNAME уходит за пределы этого ответа
             sub = self.resolve(last, qtype, budget, depth + 1)
             if sub.rcode == SERVFAIL:
                 return sub
@@ -638,7 +604,7 @@ class Resolver:
         self.cache.put(name, qtype, res)
         return res
 
-    # ---------- спуск по делегированиям ----------
+    # спуск по делегированиям
     def _iterate(self, name, qtype, budget, depth):
         zone, servers = self.cache.get_delegation(name)
         starts = []
@@ -722,9 +688,7 @@ class Resolver:
         return new_zone, ips
 
 
-# --------------------------------------------------------------------------- #
 #  ".multiply." - считаем сами
-# --------------------------------------------------------------------------- #
 def multiply_answer(name):
     """2.22.multiply.test.com -> 44. Берутся числа, стоящие непосредственно перед меткой multiply."""
     for i in range(1, len(name)):
@@ -738,9 +702,7 @@ def multiply_answer(name):
     return None
 
 
-# --------------------------------------------------------------------------- #
 #  Обработка клиентских запросов
-# --------------------------------------------------------------------------- #
 class App:
     def __init__(self, resolver):
         self.resolver = resolver
@@ -834,9 +796,7 @@ class ThreadingTCP(socketserver.ThreadingTCPServer):
     request_queue_size = 128
 
 
-# --------------------------------------------------------------------------- #
 #  main
-# --------------------------------------------------------------------------- #
 def main():
     ap = argparse.ArgumentParser(description="Итеративный DNS-сервер с кешем")
     ap.add_argument("--host", default="127.0.0.1", help="адрес для прослушивания (по умолчанию 127.0.0.1)")
